@@ -1,5 +1,6 @@
 
 streamlit
 torch
-transformers
+transformers==4.46.3
 safetensors
+pandas
