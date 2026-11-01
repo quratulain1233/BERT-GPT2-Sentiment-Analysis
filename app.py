@@ -4,61 +4,63 @@ import torch
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# ---------------- PAGE CONFIG ----------------
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
+
 st.set_page_config(
-    page_title="Sentiment AI | Smart Analyzer",
+    page_title="Sentiment Intelligence AI",
     page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-MODEL_ID = "qurrat99/bert-sentiment-analysis"
+BERT_ID = "qurrat99/bert-sentiment-analysis"
+GPT2_ID = "qurrat99/gpt2-sentiment-analysis"
 
-# ---------------- CUSTOM CSS ----------------
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ==========================================
+# CUSTOM CSS
+# ==========================================
+
 st.markdown("""
 <style>
 .stApp {
-    background: linear-gradient(135deg, #0b1020 0%, #15132e 55%, #101b35 100%);
-    color: #f8fafc;
+    background: linear-gradient(135deg, #0b1020, #17132f, #101b35);
+    color: white;
 }
 
-header {background: transparent !important;}
-
 .block-container {
-    max-width: 1200px;
+    max-width: 1250px;
     padding-top: 2rem;
-    padding-bottom: 3rem;
 }
 
 .hero {
     background: linear-gradient(120deg, #312e81, #6d28d9, #2563eb);
     padding: 38px;
     border-radius: 22px;
-    margin-bottom: 28px;
-    box-shadow: 0 15px 45px rgba(0,0,0,0.25);
+    margin-bottom: 25px;
 }
 
 .hero h1 {
     color: white;
     font-size: 38px;
-    margin-bottom: 8px;
 }
 
 .hero p {
     color: #e0e7ff;
-    font-size: 16px;
 }
 
 .panel {
-    background: rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.07);
     border: 1px solid rgba(255,255,255,0.12);
     padding: 24px;
     border-radius: 18px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
 }
 
 .result-card {
-    background: rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.07);
     border: 1px solid rgba(255,255,255,0.15);
     padding: 25px;
     border-radius: 18px;
@@ -66,23 +68,19 @@ header {background: transparent !important;}
 }
 
 .result-card h2 {
-    font-size: 30px;
-    margin: 10px 0;
+    font-size: 27px;
 }
 
 .small-label {
     color: #a5b4fc;
     font-size: 13px;
-    text-transform: uppercase;
     letter-spacing: 2px;
 }
 
 .stTextArea textarea {
     background: #171d35 !important;
     color: white !important;
-    border: 1px solid #55518a !important;
-    border-radius: 14px !important;
-    font-size: 16px !important;
+    border-radius: 12px !important;
 }
 
 .stButton button {
@@ -90,196 +88,343 @@ header {background: transparent !important;}
     color: white;
     border: none;
     border-radius: 12px;
-    padding: 12px 25px;
-    font-weight: 700;
-    width: 100%;
     min-height: 48px;
+    font-weight: bold;
 }
 
 .stButton button:hover {
-    background: linear-gradient(90deg, #6d28d9, #1d4ed8);
     color: white;
     border: 1px solid #a78bfa;
 }
 
 section[data-testid="stSidebar"] {
     background: #10162b;
-    border-right: 1px solid #30365a;
 }
-
-footer {visibility: hidden;}
 
 </style>
 """, unsafe_allow_html=True)
 
 
-# ---------------- LOAD MODEL ----------------
+# ==========================================
+# LOAD MODELS
+# ==========================================
+
 @st.cache_resource
-def load_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID)
+def load_model(model_id, model_type):
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_id
+    )
+
+    # GPT-2 requires a padding token
+    if model_type == "GPT-2":
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+    model.to(DEVICE)
     model.eval()
+
     return tokenizer, model
 
 
-# ---------------- SIDEBAR ----------------
+# ==========================================
+# SENTIMENT PREDICTION
+# ==========================================
+
+def predict_sentiment(text, model_id, model_type):
+
+    tokenizer, model = load_model(model_id, model_type)
+
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=128
+    )
+
+    inputs = {
+        key: value.to(DEVICE)
+        for key, value in inputs.items()
+    }
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+        probabilities = torch.softmax(
+            outputs.logits,
+            dim=-1
+        )[0]
+
+    predicted_id = torch.argmax(probabilities).item()
+
+    raw_label = model.config.id2label.get(
+        predicted_id,
+        model.config.id2label.get(str(predicted_id), "")
+    )
+
+    label_map = {
+        "LABEL_0": "Negative",
+        "LABEL_1": "Neutral",
+        "LABEL_2": "Positive",
+        "0": "Negative",
+        "1": "Neutral",
+        "2": "Positive"
+    }
+
+    sentiment = label_map.get(
+        str(raw_label).upper(),
+        str(raw_label)
+    )
+
+    confidence = probabilities[predicted_id].item() * 100
+
+    result = {
+        "sentiment": sentiment,
+        "confidence": confidence,
+        "probabilities": {
+            label: probabilities[i].item() * 100
+            for i, label in enumerate(
+                ["Negative", "Neutral", "Positive"]
+            )
+        }
+    }
+
+    return result
+
+
+# ==========================================
+# SIDEBAR
+# ==========================================
+
 with st.sidebar:
+
     st.markdown("## 🧠 Sentiment AI")
-    st.caption("Intelligent Text Analysis")
-    st.divider()
 
-    st.markdown("### About the model")
-    st.write("**Architecture:** BERT")
-    st.write("**Task:** Sentiment Classification")
-    st.write("**Classes:** Positive, Negative, Neutral")
+    st.caption("Dual Transformer Intelligence")
 
     st.divider()
-    st.markdown("### How to use")
-    st.write("1. Enter a tweet or sentence.")
-    st.write("2. Click Analyze Sentiment.")
-    st.write("3. View the prediction and confidence.")
+
+    st.markdown("### Available Models")
+
+    st.write("🔵 BERT – Encoder-only")
+    st.write("🟣 GPT-2 – Decoder-only")
 
     st.divider()
-    st.caption("Powered by Hugging Face Transformers")
+
+    st.markdown("### About the Project")
+
+    st.write("""
+    This application compares two Transformer
+    architectures for three-class sentiment
+    classification.
+    """)
+
+    st.divider()
+
+    st.caption("Powered by Hugging Face and Streamlit")
 
 
-# ---------------- HEADER ----------------
+# ==========================================
+# MAIN HEADER
+# ==========================================
+
 st.markdown("""
 <div class="hero">
     <div class="small-label">ARTIFICIAL INTELLIGENCE • NLP</div>
-    <h1>🧠 Sentiment Intelligence</h1>
-    <p>Understand emotions behind words with your fine-tuned BERT model.</p>
+    <h1>🧠 Sentiment Intelligence AI</h1>
+    <p>
+    Analyze emotions using two powerful Transformer
+    architectures: BERT and GPT-2.
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ---------------- MODEL STATUS ----------------
-try:
-    with st.spinner("Connecting to your BERT model..."):
-        tokenizer, model = load_model()
-    st.success("● BERT model connected and ready")
-except Exception as e:
-    st.error("Unable to load the model. Check your Hugging Face repository.")
-    st.exception(e)
-    st.stop()
+# ==========================================
+# MODEL SELECTION
+# ==========================================
+
+st.markdown("### ⚙️ Select Your AI Model")
+
+model_choice = st.radio(
+    "Choose analysis mode:",
+    ["BERT", "GPT-2", "Compare Both"],
+    horizontal=True
+)
+
+if model_choice == "BERT":
+    st.info("Using BERT – Encoder-only Transformer.")
+
+elif model_choice == "GPT-2":
+    st.info("Using GPT-2 – Decoder-only Transformer.")
+
+else:
+    st.info("Both models will analyze the same text.")
 
 
-# ---------------- INPUT SECTION ----------------
-left, right = st.columns([1.35, 0.85], gap="large")
+# ==========================================
+# TEXT INPUT
+# ==========================================
 
-with left:
-    st.markdown("### ✍️ Enter your text")
+st.markdown("### ✍️ Enter Your Text")
 
-    user_text = st.text_area(
-        "Text to analyze",
-        placeholder="Example: I absolutely love the service. The experience was amazing!",
-        height=190,
-        label_visibility="collapsed"
-    )
+user_text = st.text_area(
+    "Tweet or sentence",
+    placeholder="Example: I absolutely love this airline. Amazing service!",
+    height=150,
+    label_visibility="collapsed"
+)
 
-    analyze = st.button("✨ Analyze Sentiment", use_container_width=True)
+analyze = st.button(
+    "✨ Analyze Sentiment",
+    use_container_width=True
+)
 
-with right:
-    st.markdown("""
-    <div class="panel">
-        <div class="small-label">YOUR AI ASSISTANT</div>
-        <h2>Discover the emotion.</h2>
-        <p>Analyze customer feedback, tweets, reviews and everyday text.</p>
-        <hr>
-        <p>🟢 Positive sentiment</p>
-        <p>🔴 Negative sentiment</p>
-        <p>🟡 Neutral sentiment</p>
+
+# ==========================================
+# DISPLAY RESULTS
+# ==========================================
+
+def show_result(result, model_name):
+
+    sentiment = result["sentiment"]
+    confidence = result["confidence"]
+
+    emoji = {
+        "Positive": "😊",
+        "Negative": "😞",
+        "Neutral": "😐"
+    }.get(sentiment, "🧠")
+
+    st.markdown(f"""
+    <div class="result-card">
+        <div class="small-label">{model_name} PREDICTION</div>
+        <h2>{emoji} {sentiment}</h2>
+        <h3>{confidence:.2f}%</h3>
+        <p>Prediction confidence</p>
     </div>
     """, unsafe_allow_html=True)
 
+    st.markdown("#### Probability Breakdown")
 
-# ---------------- PREDICTION ----------------
+    probability_df = pd.DataFrame({
+        "Sentiment": list(result["probabilities"].keys()),
+        "Probability (%)": list(result["probabilities"].values())
+    }).set_index("Sentiment")
+
+    st.bar_chart(probability_df)
+
+
+# ==========================================
+# RUN ANALYSIS
+# ==========================================
+
 if analyze:
+
     if not user_text.strip():
-        st.warning("Please enter some text before analyzing.")
+
+        st.warning("Please enter some text first.")
+
     else:
-        with st.spinner("Analyzing your text..."):
-            inputs = tokenizer(
-                user_text,
-                return_tensors="pt",
-                truncation=True,
-                padding=True,
-                max_length=128
-            )
-
-            with torch.no_grad():
-                outputs = model(**inputs)
-                probabilities = torch.softmax(outputs.logits, dim=1)[0]
-
-            predicted_id = torch.argmax(probabilities).item()
-            sentiment = model.config.id2label[predicted_id]
-            confidence = probabilities[predicted_id].item() * 100
-
-        normalized = sentiment.upper()
-
-        if "POSITIVE" in normalized:
-            emoji = "😊"
-            color = "#22c55e"
-            description = "This text expresses a positive emotion."
-        elif "NEGATIVE" in normalized:
-            emoji = "😞"
-            color = "#f87171"
-            description = "This text expresses a negative emotion."
-        else:
-            emoji = "😐"
-            color = "#facc15"
-            description = "This text expresses a neutral emotion."
 
         st.markdown("---")
         st.markdown("## 📊 Analysis Results")
 
-        col1, col2 = st.columns(2)
+        try:
 
-        with col1:
-            st.markdown(f"""
-            <div class="result-card">
-                <div class="small-label">PREDICTED SENTIMENT</div>
-                <h2>{emoji} {normalized}</h2>
-                <p>{description}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            if model_choice == "BERT":
 
-        with col2:
-            st.markdown(f"""
-            <div class="result-card">
-                <div class="small-label">MODEL CONFIDENCE</div>
-                <h2>{confidence:.2f}%</h2>
-                <p>Confidence in the predicted class</p>
-            </div>
-            """, unsafe_allow_html=True)
+                with st.spinner("Analyzing with BERT..."):
 
-        st.markdown("### 📈 Sentiment probability breakdown")
+                    result = predict_sentiment(
+                        user_text,
+                        BERT_ID,
+                        "BERT"
+                    )
 
-        labels = [
-            model.config.id2label[i]
-            for i in range(len(probabilities))
-        ]
+                show_result(result, "BERT")
 
-        chart_data = pd.DataFrame({
-            "Sentiment": labels,
-            "Probability (%)": [
-                p.item() * 100 for p in probabilities
-            ]
-        }).set_index("Sentiment")
+            elif model_choice == "GPT-2":
 
-        st.bar_chart(chart_data, horizontal=True)
+                with st.spinner("Analyzing with GPT-2..."):
 
-        st.markdown(
-            f"<p style='color:{color};font-weight:bold;'>"
-            f"Analysis completed successfully.</p>",
-            unsafe_allow_html=True
-        )
+                    result = predict_sentiment(
+                        user_text,
+                        GPT2_ID,
+                        "GPT-2"
+                    )
 
-# ---------------- FOOTER ----------------
+                show_result(result, "GPT-2")
+
+            else:
+
+                with st.spinner("Comparing BERT and GPT-2..."):
+
+                    bert_result = predict_sentiment(
+                        user_text,
+                        BERT_ID,
+                        "BERT"
+                    )
+
+                    gpt2_result = predict_sentiment(
+                        user_text,
+                        GPT2_ID,
+                        "GPT-2"
+                    )
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    show_result(bert_result, "BERT")
+
+                with col2:
+                    show_result(gpt2_result, "GPT-2")
+
+                st.markdown("### 🔍 Model Comparison")
+
+                comparison = pd.DataFrame({
+                    "Model": ["BERT", "GPT-2"],
+                    "Predicted Sentiment": [
+                        bert_result["sentiment"],
+                        gpt2_result["sentiment"]
+                    ],
+                    "Confidence (%)": [
+                        round(bert_result["confidence"], 2),
+                        round(gpt2_result["confidence"], 2)
+                    ]
+                })
+
+                st.dataframe(
+                    comparison,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                if bert_result["sentiment"] == gpt2_result["sentiment"]:
+                    st.success("Both models predicted the same sentiment.")
+                else:
+                    st.warning("The models predicted different sentiments.")
+
+        except Exception as error:
+
+            st.error("An error occurred during prediction.")
+            st.exception(error)
+
+
+# ==========================================
+# FOOTER
+# ==========================================
+
 st.markdown("---")
-st.markdown(
-    "<p style='text-align:center;color:#94a3b8;'>"
-    "Sentiment Intelligence | Built with BERT, PyTorch & Streamlit"
-    "</p>",
-    unsafe_allow_html=True
-)
+
+st.markdown("""
+<p style="text-align:center;color:#94a3b8;">
+Sentiment Intelligence AI | BERT + GPT-2
+<br>
+Built with PyTorch, Hugging Face Transformers and Streamlit
+</p>
+""", unsafe_allow_html=True)
